@@ -541,9 +541,8 @@ class UOp(MathTrait, metaclass=UOpMetaClass):
     return dsrcs[0]._device if len(dsrcs:=[x for x in self.src if x._device is not None]) != 0 else None
   @property
   def buf_uop(self) -> UOp:
-    if self.op is Ops.BUFFER: return self
-    assert self.op is Ops.ASSIGN, f"must be ASSIGN {self.op}"
-    return self.src[0].base
+    if self.op is not Ops.BUFFER: return self.src[0].base
+    return self
   @property
   def buffer(self) -> Buffer:
     if self is not self.base:
@@ -911,6 +910,17 @@ def track_rewrites(named=False, name_fxn:Callable|None=None):
   return _decorator
 
 active_rewrites:list[TrackedGraphRewrite] = []
+
+# --- VIZ strong reference tracking ---
+viz_tracked_refs: list[TrackedGraphRewrite] = []
+
+def add_viz_tracked_ref(ref: TrackedGraphRewrite):
+  if getenv("VIZ"):  # Only keep strong refs if VIZ is enabled
+    viz_tracked_refs.append(ref)
+
+def clear_viz_tracked_refs():
+  viz_tracked_refs.clear()
+
 def track_matches(func):
   def _track_func(*args, **kwargs):
     if tracking:=(TRACK_MATCH_STATS >= 2 and tracked_ctxs):
@@ -920,6 +930,8 @@ def track_matches(func):
       sink = weakref.ref(args[0]) if isinstance(args[0], UOp) else args[0]
       tracked_ctxs[-1].append(ctx:=TrackedGraphRewrite(loc, sink, kwargs.get("bottom_up", False), [], kwargs.get("name", None), depth))
       active_rewrites.append(ctx)
+      # --- Add strong ref for VIZ ---
+      add_viz_tracked_ref(ctx)
     ret = func(*args, **kwargs)
     if tracking: active_rewrites.pop()
     return ret
@@ -987,6 +999,8 @@ def launch_viz(env_str:str, data:str):
     args = ['--kernels', getenv("VIZ_DATA", "")] if getenv("VIZ_DATA", "") else []
     args += ['--profile', getenv("PROFILE_DATA", "")] if getenv("PROFILE_DATA", "") else []
     os.execv(sys.executable, [sys.executable] + [os.path.join(os.path.dirname(__file__), ".", "viz", "serve.py")] + args)
+  # --- Clear strong refs after VIZ is launched ---
+  clear_viz_tracked_refs()
 
 # *** simple graph rewrite engine ***
 

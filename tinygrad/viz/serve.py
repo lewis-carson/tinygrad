@@ -86,14 +86,31 @@ def uop_to_json(x:UOp) -> dict[int, dict]:
   return graph
 
 def get_details(k:Any, ctx:TrackedGraphRewrite) -> Generator[GraphRewriteDetails, None, None]:
-  yield {"graph":uop_to_json(next_sink:=ctx.sink), "uop":str(ctx.sink), "changed_nodes":None, "diff":None, "upat":None}
+  # Dereference weakref if needed
+  next_sink = ctx.sink() if hasattr(ctx.sink, "__call__") else ctx.sink
+  if next_sink is None:
+    return
+  yield {"graph":uop_to_json(next_sink), "uop":str(next_sink), "changed_nodes":None, "diff":None, "upat":None}
   replaces: dict[UOp, UOp] = {}
   for u0,u1,upat in tqdm(ctx.matches):
-    replaces[u0] = u1
-    try: new_sink = next_sink.substitute(replaces)
-    except RecursionError as e: new_sink = UOp(Ops.NOOP, arg=str(e))
-    yield {"graph":(sink_json:=uop_to_json(new_sink)), "uop":str(new_sink), "changed_nodes":[id(x) for x in u1.toposort() if id(x) in sink_json],
-           "diff":list(difflib.unified_diff(pcall(str, u0).splitlines(), pcall(str, u1).splitlines())), "upat":(upat.location, upat.printable())}
+    # Dereference weakrefs if needed
+    u0_real = u0() if hasattr(u0, "__call__") else u0
+    u1_real = u1() if hasattr(u1, "__call__") else u1
+    if u0_real is None or u1_real is None:
+      continue
+    replaces[u0_real] = u1_real
+    try:
+      new_sink = next_sink.substitute(replaces) if next_sink is not None else None
+    except RecursionError as e:
+      new_sink = UOp(Ops.NOOP, arg=str(e))
+    if new_sink is None:
+      continue
+    yield {"graph":(sink_json:=uop_to_json(new_sink)),
+           "uop":str(new_sink),
+           "changed_nodes":[id(x) for x in u1_real.toposort() if id(x) in sink_json],
+           "diff":list(difflib.unified_diff(pcall(str, u0_real).splitlines(),
+                                             pcall(str, u1_real).splitlines())),
+           "upat":(upat.location, upat.printable())}
     if not ctx.bottom_up: next_sink = new_sink
 
 # Profiler API
